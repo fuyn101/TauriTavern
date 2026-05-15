@@ -40,37 +40,46 @@ pub(super) async fn list_models(
         DomainError::InternalError(format!("Failed to parse models JSON: {error}"))
     })?;
 
-    let models = body
-        .get("models")
+    let models = normalize_gemini_model_list(&body);
+
+    Ok(json!({ "data": models }))
+}
+
+fn normalize_gemini_model_list(body: &Value) -> Vec<Value> {
+    body.get("models")
         .and_then(Value::as_array)
         .map(|models| {
             models
                 .iter()
-                .filter(|model| {
-                    model
-                        .get("supportedGenerationMethods")
-                        .and_then(Value::as_array)
-                        .is_some_and(|methods| {
-                            methods
-                                .iter()
-                                .any(|entry| entry.as_str() == Some("generateContent"))
-                        })
-                })
+                .filter(|model| supports_generate_content(model))
                 .filter_map(|model| {
-                    let id = model
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .map(|name| name.trim_start_matches("models/"))
-                        .map(str::trim)
-                        .filter(|name| !name.is_empty())?;
-
+                    let id = extract_gemini_model_id(model)?;
                     Some(json!({ "id": id }))
                 })
                 .collect::<Vec<Value>>()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
-    Ok(json!({ "data": models }))
+fn supports_generate_content(model: &Value) -> bool {
+    match model.get("supportedGenerationMethods") {
+        Some(Value::Array(methods)) => methods.iter().any(|entry| {
+            entry
+                .as_str()
+                .is_some_and(|method| method.eq_ignore_ascii_case("generateContent"))
+        }),
+        Some(Value::Null) | None => true,
+        _ => true,
+    }
+}
+
+fn extract_gemini_model_id(model: &Value) -> Option<&str> {
+    ["name", "displayName", "baseModelId"]
+        .into_iter()
+        .find_map(|key| model.get(key).and_then(Value::as_str))
+        .map(|name| name.trim_start_matches("models/"))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
 }
 
 pub(super) async fn generate(
@@ -276,8 +285,9 @@ mod tests {
 
     use reqwest::Client;
     use reqwest::header::{AUTHORIZATION, HeaderName};
+    use serde_json::json;
 
-    use super::apply_gemini_auth;
+    use super::{apply_gemini_auth, normalize_gemini_model_list};
     use crate::domain::repositories::chat_completion_repository::{
         AnthropicBetaHeaderMode, ChatCompletionApiConfig,
     };
@@ -311,5 +321,54 @@ mod tests {
                 .is_none()
         );
         assert_eq!(request.url().query(), None);
+    }
+
+    #[test]
+    fn model_list_accepts_proxy_models_without_generation_methods() {
+        let body = json!({
+            "models": [
+                {
+                    "name": "gpt-5.4-mini",
+                    "displayName": "gpt-5.4-mini",
+                    "supportedGenerationMethods": null
+                },
+                {
+                    "name": "gemini-3.1-pro-preview:agy",
+                    "displayName": "gemini-3.1-pro-preview:agy",
+                    "supportedGenerationMethods": null
+                }
+            ],
+            "nextPageToken": null
+        });
+
+        let models = normalize_gemini_model_list(&body);
+
+        assert_eq!(
+            models,
+            vec![
+                json!({ "id": "gpt-5.4-mini" }),
+                json!({ "id": "gemini-3.1-pro-preview:agy" }),
+            ]
+        );
+    }
+
+    #[test]
+    fn model_list_filters_explicit_non_generation_models() {
+        let body = json!({
+            "models": [
+                {
+                    "name": "models/gemini-2.5-flash",
+                    "supportedGenerationMethods": ["generateContent"]
+                },
+                {
+                    "name": "models/text-embedding-004",
+                    "supportedGenerationMethods": ["embedContent"]
+                }
+            ]
+        });
+
+        let models = normalize_gemini_model_list(&body);
+
+        assert_eq!(models, vec![json!({ "id": "gemini-2.5-flash" })]);
     }
 }
