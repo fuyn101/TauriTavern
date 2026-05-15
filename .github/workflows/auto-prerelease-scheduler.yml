@@ -18,35 +18,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        channel:
-          - desktop
-          - mobile
         branch:
           - main
           - next/2.0.0
 
     runs-on: ubuntu-latest
-    name: dispatch-${{ matrix.channel }}-${{ matrix.branch }}
+    name: dispatch-desktop-${{ matrix.branch }}
 
     steps:
       - name: Dispatch branch build when new commits are available
         uses: actions/github-script@v7
         env:
           BRANCH_NAME: ${{ matrix.branch }}
-          CHANNEL: ${{ matrix.channel }}
         with:
           script: |
-            const workflows = {
-              desktop: "desktop-auto-prerelease.yml",
-              mobile: "mobile-auto-prerelease.yml",
-            };
-
-            const channel = process.env.CHANNEL;
             const branch = process.env.BRANCH_NAME;
-            const workflowId = workflows[channel];
-            if (!workflowId) {
-              throw new Error(`Unsupported prerelease channel: ${channel}`);
-            }
+            const workflowId = "desktop-auto-prerelease.yml";
 
             const { owner, repo } = context.repo;
 
@@ -70,18 +57,18 @@ jobs:
             const previousSuccessfulRun = runs.find((run) => run.conclusion === "success");
             if (previousSuccessfulRun?.head_sha === headSha) {
               core.info(
-                `Skipping ${channel}/${branch}: latest successful pre-release already built for ${headSha}.`
+                `Skipping desktop/${branch}: latest successful pre-release already built for ${headSha}.`
               );
               return;
             }
 
             if (previousSuccessfulRun) {
               core.notice(
-                `${channel}/${branch} advanced to ${headSha}; last successful pre-release was ${previousSuccessfulRun.head_sha}.`
+                `desktop/${branch} advanced to ${headSha}; last successful pre-release was ${previousSuccessfulRun.head_sha}.`
               );
             } else {
               core.notice(
-                `No successful pre-release exists yet for ${channel}/${branch}; dispatching ${headSha}.`
+                `No successful pre-release exists yet for desktop/${branch}; dispatching ${headSha}.`
               );
             }
 

@@ -1,3 +1,4 @@
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde_json::{Value, json};
 
@@ -10,6 +11,34 @@ use super::HttpChatCompletionRepository;
 use super::normalizers;
 
 const GEMINI_API_VERSION: &str = "v1beta";
+// Proxy model IDs can contain path/method delimiters such as "/" and ":".
+const GEMINI_MODEL_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}')
+    .add(b'/')
+    .add(b':')
+    .add(b'[')
+    .add(b']')
+    .add(b'@')
+    .add(b'!')
+    .add(b'$')
+    .add(b'&')
+    .add(b'\'')
+    .add(b'(')
+    .add(b')')
+    .add(b'*')
+    .add(b'+')
+    .add(b',')
+    .add(b';')
+    .add(b'=');
 
 pub(super) async fn list_models(
     repository: &HttpChatCompletionRepository,
@@ -192,8 +221,11 @@ pub(super) async fn generate_stream(
 
 fn normalize_gemini_model(model: &str) -> String {
     let model = model.trim();
-    if model.starts_with("models/") {
-        model.to_string()
+    let model = model.strip_prefix("models/").unwrap_or(model);
+    let model = utf8_percent_encode(model, GEMINI_MODEL_PATH_ENCODE_SET).to_string();
+
+    if model.is_empty() {
+        "models/".to_string()
     } else {
         format!("models/{model}")
     }
@@ -287,7 +319,9 @@ mod tests {
     use reqwest::header::{AUTHORIZATION, HeaderName};
     use serde_json::json;
 
-    use super::{apply_gemini_auth, normalize_gemini_model_list};
+    use super::{
+        apply_gemini_auth, build_gemini_url, normalize_gemini_model, normalize_gemini_model_list,
+    };
     use crate::domain::repositories::chat_completion_repository::{
         AnthropicBetaHeaderMode, ChatCompletionApiConfig,
     };
@@ -370,5 +404,34 @@ mod tests {
         let models = normalize_gemini_model_list(&body);
 
         assert_eq!(models, vec![json!({ "id": "gemini-2.5-flash" })]);
+    }
+
+    #[test]
+    fn model_path_encodes_proxy_model_id_delimiters() {
+        assert_eq!(
+            normalize_gemini_model("gemini-3.1-pro-preview:cli"),
+            "models/gemini-3.1-pro-preview%3Acli"
+        );
+        assert_eq!(
+            normalize_gemini_model("openai/gpt-oss-120b:free"),
+            "models/openai%2Fgpt-oss-120b%3Afree"
+        );
+        assert_eq!(
+            normalize_gemini_model("models/gemini-3.1-pro-preview:agy"),
+            "models/gemini-3.1-pro-preview%3Aagy"
+        );
+    }
+
+    #[test]
+    fn generation_url_keeps_method_separator_unescaped() {
+        let model_path = format!(
+            "{}:generateContent",
+            normalize_gemini_model("gemini-3.1-pro-preview:cli")
+        );
+
+        assert_eq!(
+            build_gemini_url("https://proxy.example.com/v1beta", &model_path),
+            "https://proxy.example.com/v1beta/models/gemini-3.1-pro-preview%3Acli:generateContent"
+        );
     }
 }
