@@ -31,18 +31,29 @@ jobs:
               branch: "dev",
             });
             const headSha = branchData.commit.sha;
-            const { data: canaryCommit } = await github.rest.repos.getCommit({
-              owner,
-              repo,
-              ref: "Canary",
-            });
+            let canaryCommit;
+            try {
+              ({ data: canaryCommit } = await github.rest.repos.getCommit({
+                owner,
+                repo,
+                ref: "Canary",
+              }));
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
 
-            if (canaryCommit.sha === headSha) {
+              core.notice(`No Canary release exists yet; dispatching the first build for dev ${headSha}.`);
+            }
+
+            if (canaryCommit?.sha === headSha) {
               core.info(`Skipping Canary: dev ${headSha} is already published.`);
               return;
             }
 
-            core.notice(`Canary ${canaryCommit.sha} -> dev ${headSha}; dispatching.`);
+            if (canaryCommit) {
+              core.notice(`Canary ${canaryCommit.sha} -> dev ${headSha}; dispatching.`);
+            }
 
             await github.rest.actions.createWorkflowDispatch({
               owner,

@@ -38,18 +38,29 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git fetch --force origin refs/tags/Canary:refs/tags/Canary
-          previous_sha=$(git rev-parse Canary^{commit})
-          test "$previous_sha" != "$GITHUB_SHA" || {
-            echo "Canary already points to $GITHUB_SHA"
-            exit 1
-          }
-          stable_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
-          [[ "$stable_tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
-            echo "Latest stable release has an invalid tag: $stable_tag" >&2
-            exit 1
-          }
-          stable_version=${BASH_REMATCH[1]}
+          if git fetch --force origin refs/tags/Canary:refs/tags/Canary; then
+            previous_sha=$(git rev-parse Canary^{commit})
+            test "$previous_sha" != "$GITHUB_SHA" || {
+              echo "Canary already points to $GITHUB_SHA"
+              exit 1
+            }
+          else
+            git fetch --force origin refs/heads/main:refs/remotes/origin/main
+            previous_sha=$(git rev-parse origin/main^{commit})
+            echo "No Canary tag exists; using main $previous_sha as the initial release-notes baseline."
+          fi
+
+          stable_tag=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+          if [[ "$stable_tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            stable_version=${BASH_REMATCH[1]}
+          else
+            stable_version=$(jq -r .version src-tauri/crates/tauritavern/tauri.conf.json)
+            [[ "$stable_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "No valid stable release or application version is available." >&2
+              exit 1
+            }
+            echo "No stable release exists; using application version $stable_version."
+          fi
           {
             echo "asset_time=$(TZ=Asia/Shanghai date +'%Y%m%d')"
             echo "display_time=$(TZ=Asia/Shanghai date +'%Y.%m.%d')"
@@ -582,14 +593,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release view Canary --repo "$GITHUB_REPOSITORY" >/dev/null
-          find release-assets -type f -name "${ASSET_PREFIX}*" -print0 \
-            | xargs -0 gh release upload Canary --repo "$GITHUB_REPOSITORY" --clobber
-          gh release edit Canary \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "Canary Release $DISPLAY_TIME" \
-            --notes-file notes/release-notes.md \
-            --prerelease
+          mapfile -d '' assets < <(find release-assets -type f -name "${ASSET_PREFIX}*" -print0)
+          if gh release view Canary --repo "$GITHUB_REPOSITORY" >/dev/null; then
+            printf '%s\0' "${assets[@]}" \
+              | xargs -0 gh release upload Canary --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit Canary \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Canary Release $DISPLAY_TIME" \
+              --notes-file notes/release-notes.md \
+              --prerelease
+          else
+            gh release create Canary "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Canary Release $DISPLAY_TIME" \
+              --notes-file notes/release-notes.md \
+              --prerelease
+          fi
           gh api --method PATCH \
             "repos/$GITHUB_REPOSITORY/git/refs/tags/Canary" \
             -f sha="$GITHUB_SHA" \
